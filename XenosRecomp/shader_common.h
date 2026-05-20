@@ -11,8 +11,7 @@
 #endif
 
 #ifdef MARATHON_RECOMP
-    #define SPEC_CONSTANT_CONDITIONAL_SURVEY    (1 << 5)
-    #define SPEC_CONSTANT_CONDITIONAL_RENDERING (1 << 6)
+    #define SPEC_CONSTANT_CONDITIONAL_RENDERING (1 << 5)
 #endif
 
 #if defined(__air__) || !defined(__cplusplus) || defined(__INTELLISENSE__)

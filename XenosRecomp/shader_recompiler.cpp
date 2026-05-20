@@ -1692,33 +1692,16 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     out += "#ifdef __air__\n";
 
     if (isPixelShader)
-    {
         out += "[[fragment]]\n";
-
-        auto pixelShader = reinterpret_cast<const PixelShader*>(shader);
-        if (!(pixelShader->outputs & PIXEL_SHADER_OUTPUT_DEPTH))
-            out += "[[early_fragment_tests]]\n";
-    }
     else
         out += "[[vertex]]\n";
 
-    out += "#else\n";
-
-    out += "#if !defined(__spirv__)\n";
+    out += "#elif !defined(__spirv__)\n";
 
     if (isPixelShader)
         out += "[shader(\"pixel\")]\n";
     else
         out += "[shader(\"vertex\")]\n";
-
-    out += "#endif\n";
-
-    if (isPixelShader)
-    {
-        auto pixelShader = reinterpret_cast<const PixelShader*>(shader);
-        if (!(pixelShader->outputs & PIXEL_SHADER_OUTPUT_DEPTH))
-            out += "[earlydepthstencil]\n";
-    }
 
     out += "#endif\n";
 
@@ -2276,21 +2259,6 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                     out += "\toutput.oC0.w *= 1.0 + computeMipLevel(pixelCoord) * 0.25;\n";
                     indent();
                     out += "\toutput.oC0.w = 0.5 + (output.oC0.w - g_AlphaThreshold) / max(fwidth(output.oC0.w), 1e-6);\n";
-
-                    indent();
-                    out += "}\n";
-                #endif
-
-                #ifdef MARATHON_RECOMP
-                    specConstantsMask |= SPEC_CONSTANT_CONDITIONAL_SURVEY;
-
-                    indent();
-                    out += "BRANCH if (g_SpecConstants() & SPEC_CONSTANT_CONDITIONAL_SURVEY)\n";
-                    indent();
-                    out += "{\n";
-
-                    indent();
-                    out += "\tatomicFetchAddUint(g_ConditionalSurveyBuffer, g_conditionalSurveyIndex, 1);\n";
 
                     indent();
                     out += "}\n";
