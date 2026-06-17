@@ -97,7 +97,35 @@ static constexpr DeclUsageLocation USAGE_LOCATIONS[] =
     { DeclUsage::Color, 0, 17 },
     { DeclUsage::BlendIndices, 0, 18 },
     { DeclUsage::BlendWeight, 0, 19 },
+    { DeclUsage::TexCoord, 5, 20 },
+    { DeclUsage::TexCoord, 6, 21 },
+    { DeclUsage::TexCoord, 7, 22 },
+    { DeclUsage::Color, 1, 23 },
+    { DeclUsage::Depth, 1, 24 },
+    { DeclUsage::Tangent, 4, 25 },
+    { DeclUsage::Tangent, 5, 26 },
+    { DeclUsage::Tangent, 6, 27 },
+    { DeclUsage::Tangent, 7, 28 },
+    { DeclUsage::Binormal, 1, 29 },
+    { DeclUsage::Binormal, 2, 30 },
+    { DeclUsage::Binormal, 3, 31 },
 };
+
+static const DeclUsageLocation* findUsageLocation(DeclUsage usage, uint32_t usageIndex)
+{
+    for (auto& usageLocation : USAGE_LOCATIONS)
+    {
+        if (usageLocation.usage == usage && usageLocation.usageIndex == usageIndex)
+            return &usageLocation;
+    }
+
+    return nullptr;
+}
+
+static bool isPosition0(DeclUsage usage, uint32_t usageIndex)
+{
+    return usage == DeclUsage::Position && usageIndex == 0;
+}
 
 static constexpr std::pair<DeclUsage, size_t> INTERPOLATORS[] =
 {
@@ -118,7 +146,8 @@ static constexpr std::pair<DeclUsage, size_t> INTERPOLATORS[] =
     { DeclUsage::TexCoord, 14 },
     { DeclUsage::TexCoord, 15 },
     { DeclUsage::Color, 0 },
-    { DeclUsage::Color, 1 }
+    { DeclUsage::Color, 1 },
+    { DeclUsage::Color, 2 }
 };
 
 static constexpr std::string_view TEXTURE_DIMENSIONS[] = 
@@ -180,9 +209,24 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
         ++indentation;
     }
 
+    size_t assignmentStart = out.size();
     indent();
     print("r{}.", instr.dstRegister);
     uint32_t size = printDstSwizzle(instr.dstSwizzle, false);
+    if (size == 0)
+    {
+        out.resize(assignmentStart);
+        printDstSwizzle01(instr.dstRegister, instr.dstSwizzle);
+
+        if (instr.isPredicated)
+        {
+            --indentation;
+            indent();
+            out += "}\n";
+        }
+
+        return;
+    }
 
     out += " = ";
 
@@ -192,38 +236,78 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
         print("(float{})(", size);
 
     auto findResult = vertexElements.find(address);
-    assert(findResult != vertexElements.end());
+    const VertexElement* vertexElement = findResult != vertexElements.end() ? &findResult->second : nullptr;
+    const DeclUsageLocation* usageLocation = vertexElement != nullptr
+        ? findUsageLocation(vertexElement->usage, uint32_t(vertexElement->usageIndex))
+        : nullptr;
 
-    switch (findResult->second.usage)
+    if (vertexElement == nullptr || usageLocation == nullptr ||
+        uint32_t(vertexElement->usage) >= std::size(USAGE_VARIABLES))
     {
-    case DeclUsage::Normal:
-        print("swapFloats(g_SwappedNormals, ");
-        break;
-    case DeclUsage::Tangent:
-        print("swapFloats(g_SwappedTangents, ");
-        break;
-    case DeclUsage::Binormal:
-        print("swapFloats(g_SwappedBinormals, ");
-        break;
-    case DeclUsage::BlendWeight:
-        print("swapFloats(g_SwappedBlendWeights, ");
-        break;
-    case DeclUsage::TexCoord:
-        print("swapFloats(g_SwappedTexcoords, ");
-        break;
+        out += "float4(0.0, 0.0, 0.0, 0.0)";
     }
-
-    print("(input.i{}{})", USAGE_VARIABLES[uint32_t(findResult->second.usage)], uint32_t(findResult->second.usageIndex));
-
-    switch (findResult->second.usage)
+    else
     {
-    case DeclUsage::Normal:
-    case DeclUsage::Tangent:
-    case DeclUsage::Binormal:
-    case DeclUsage::BlendWeight:
-    case DeclUsage::TexCoord:
-        print(", {})", uint32_t(findResult->second.usageIndex));
-        break;
+
+        const uint32_t usageIndex = uint32_t(vertexElement->usageIndex);
+        const bool position0 = isPosition0(vertexElement->usage, usageIndex);
+
+#ifndef UNLEASHED_RECOMP
+        const bool byteBasis =
+            vertexElement->usage == DeclUsage::Normal ||
+            vertexElement->usage == DeclUsage::Tangent ||
+            vertexElement->usage == DeclUsage::Binormal;
+#else
+        const bool byteBasis = false;
+#endif
+
+        if (position0)
+        {
+            out += "tfetchPos3N(";
+        }
+        if (byteBasis)
+        {
+            out += "unpackUByte4Basis(";
+            specConstantsMask |= SPEC_CONSTANT_UNPACK_UBYTE4_BASIS;
+        }
+
+        switch (vertexElement->usage)
+        {
+        case DeclUsage::Normal:
+            print("swapFloats(g_SwappedNormals, ");
+            break;
+        case DeclUsage::Tangent:
+            print("swapFloats(g_SwappedTangents, ");
+            break;
+        case DeclUsage::Binormal:
+            print("swapFloats(g_SwappedBinormals, ");
+            break;
+        case DeclUsage::BlendWeight:
+            print("swapFloats(g_SwappedBlendWeights, ");
+            break;
+        case DeclUsage::TexCoord:
+            print("swapFloats(g_SwappedTexcoords, ");
+            break;
+        }
+
+        print("(input.i{}{})", USAGE_VARIABLES[uint32_t(vertexElement->usage)], usageIndex);
+
+        switch (vertexElement->usage)
+        {
+        case DeclUsage::Normal:
+        case DeclUsage::Tangent:
+        case DeclUsage::Binormal:
+        case DeclUsage::BlendWeight:
+        case DeclUsage::TexCoord:
+            print(", {})", usageIndex);
+            break;
+        }
+
+        if (byteBasis)
+            out += ")";
+
+        if (position0)
+            out += ")";
     }
 
     out += ").";
@@ -301,11 +385,29 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
     }
 #endif
 
+    size_t textureAssignmentStart = out.size();
     indent();
     print("r{}.", instr.dstRegister);
-    printDstSwizzle(instr.dstSwizzle, false);
+    uint32_t textureWriteSize = printDstSwizzle(instr.dstSwizzle, false);
+    if (textureWriteSize == 0)
+    {
+        out.resize(textureAssignmentStart);
+        printDstSwizzle01(instr.dstRegister, instr.dstSwizzle);
+
+        if (instr.isPredicated)
+        {
+            --indentation;
+            indent();
+            out += "}\n";
+        }
+
+        return;
+    }
 
     out += " = ";
+    if (instr.opcode == FetchOpcode::GetTextureWeights)
+        out += "float4(";
+
     switch (instr.opcode)
     {
     case FetchOpcode::TextureFetch:
@@ -378,7 +480,16 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
             break;
     }
 
-    out += ").";
+    out += ")";
+
+    if (instr.opcode == FetchOpcode::GetTextureWeights)
+    {
+        for (uint32_t i = componentCount; i < 4; i++)
+            out += ", 0.0";
+        out += ")";
+    }
+
+    out += ".";
 
     printDstSwizzle(instr.dstSwizzle, true);
 
@@ -520,10 +631,14 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
                         regFormatted = constantName;
                     }
                 }
+                else if (!instr.const0Relative && !instr.const1Relative && float4Definitions.count(reg) != 0)
+                {
+                    regFormatted = fmt::format("c{}", reg);
+                }
                 else
                 {
-                    assert(!instr.const0Relative && !instr.const1Relative);
-                    regFormatted = fmt::format("c{}", reg);
+                    regFormatted = fmt::format("Load{}ShaderConstant({})",
+                        isPixelShader ? "Pixel" : "Vertex", reg);
                 }
             }
 
@@ -599,23 +714,35 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
     switch (instr.vectorOpcode)
     {
     case AluVectorOpcode::KillEq:
-        indent();
-        println("clip(any({} == {}) ? -1 : 1);", op(VECTOR_0).expression, op(VECTOR_1).expression);
+        if (isPixelShader)
+        {
+            indent();
+            println("clip(any({} == {}) ? -1 : 1);", op(VECTOR_0).expression, op(VECTOR_1).expression);
+        }
         break;
     
     case AluVectorOpcode::KillGt:
-        indent();
-        println("clip(any({} > {}) ? -1 : 1);", op(VECTOR_0).expression, op(VECTOR_1).expression);
+        if (isPixelShader)
+        {
+            indent();
+            println("clip(any({} > {}) ? -1 : 1);", op(VECTOR_0).expression, op(VECTOR_1).expression);
+        }
         break;
     
     case AluVectorOpcode::KillGe:
-        indent();
-        println("clip(any({} >= {}) ? -1 : 1);", op(VECTOR_0).expression, op(VECTOR_1).expression);
+        if (isPixelShader)
+        {
+            indent();
+            println("clip(any({} >= {}) ? -1 : 1);", op(VECTOR_0).expression, op(VECTOR_1).expression);
+        }
         break;
     
     case AluVectorOpcode::KillNe:
-        indent();
-        println("clip(any({} != {}) ? -1 : 1);", op(VECTOR_0).expression, op(VECTOR_1).expression);
+        if (isPixelShader)
+        {
+            indent();
+            println("clip(any({} != {}) ? -1 : 1);", op(VECTOR_0).expression, op(VECTOR_1).expression);
+        }
         break;
     }
 
@@ -684,7 +811,7 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
     if (instr.vectorOpcode >= AluVectorOpcode::SetpEqPush && instr.vectorOpcode <= AluVectorOpcode::SetpGePush)
     {
         indent();
-        print("p0 = {} == 0.0 && {} ", op(VECTOR_0).expression, op(VECTOR_1).expression);
+        print("p0 = all({} == 0.0) && all({} ", op(VECTOR_0).expression, op(VECTOR_1).expression);
 
         switch (instr.vectorOpcode)
         {
@@ -702,15 +829,22 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
             break;
         }
 
-        out += " 0.0;\n";
+        out += " 0.0);\n";
     }
     else if (instr.vectorOpcode >= AluVectorOpcode::MaxA)
     {
+        auto v0 = op(VECTOR_0);
         indent();
-        println("a0 = (int)clamp(floor(({}).w + 0.5), -256.0, 255.0);", op(VECTOR_0).expression);
+        if (v0.componentCount >= 4)
+            println("a0 = (int)clamp(floor(({}).w + 0.5), -256.0, 255.0);", v0.expression);
+        else if (v0.componentCount > 1)
+            println("a0 = (int)clamp(floor(({}).x + 0.5), -256.0, 255.0);", v0.expression);
+        else
+            println("a0 = (int)clamp(floor({} + 0.5), -256.0, 255.0);", v0.expression);
     }
 
     uint32_t vectorWriteMask = instr.vectorWriteMask;
+    vectorWriteMask &= 0b1111;
     if (instr.exportData)
         vectorWriteMask &= ~instr.scalarWriteMask;
 
@@ -750,7 +884,7 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
         if (instr.vectorSaturate)
             out += "saturate(";
 
-        size_t operationResultComponentCount;
+        size_t operationResultComponentCount = 1;
 
         switch (instr.vectorOpcode)
         {
@@ -966,6 +1100,10 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
         case AluVectorOpcode::Dst:
             operationResultComponentCount = 4;
             print("dst({}, {})", op(VECTOR_0).expression, op(VECTOR_1).expression);
+            break;
+
+        default:
+            out += "0.0";
             break;
         }
 
@@ -1194,6 +1332,10 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
         case AluScalarOpcode::Cos:
             print("cos({})", op(SCALAR_0).expression);
             break;
+
+        default:
+            out += "0.0";
+            break;
         }
 
         if (instr.scalarSaturate)
@@ -1215,6 +1357,7 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
     }
 
     uint32_t scalarWriteMask = instr.scalarWriteMask;
+    scalarWriteMask &= 0b1111;
     if (instr.exportData)
         scalarWriteMask &= ~instr.vectorWriteMask;
 
@@ -1262,7 +1405,7 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
         }
     }
 
-    if (instr.scalarOpcode >= AluScalarOpcode::KillsEq && instr.scalarOpcode <= AluScalarOpcode::KillsOne)
+    if (isPixelShader && instr.scalarOpcode >= AluScalarOpcode::KillsEq && instr.scalarOpcode <= AluScalarOpcode::KillsOne)
     {
         indent();
         out += "clip(ps != 0.0 ? -1 : 1);\n";
@@ -1285,6 +1428,10 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
 
 void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_view& include)
 {
+    const bool trace = std::getenv("XENOS_RECOMP_TRACE") != nullptr;
+    if (trace)
+        fmt::println(stderr, "trace: begin recompile");
+
     const auto shaderContainer = reinterpret_cast<const ShaderContainer*>(shaderData);
 
     assert((shaderContainer->flags & 0xFFFFFF00) == 0x102A1100);
@@ -1297,8 +1444,66 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
     const auto constantTableContainer = reinterpret_cast<const ConstantTableContainer*>(shaderData + shaderContainer->constantTableOffset);
     constantTableData = reinterpret_cast<const uint8_t*>(&constantTableContainer->constantTable);
+    const uint32_t constantTableContainerSize = constantTableContainer->size;
+    if (constantTableContainerSize < sizeof(ConstantTableContainer) ||
+        shaderContainer->constantTableOffset > shaderContainer->virtualSize ||
+        constantTableContainerSize > shaderContainer->virtualSize - shaderContainer->constantTableOffset)
+    {
+        throw std::runtime_error(fmt::format(
+            "invalid constant table range: offset={} size={} virtual_size={}",
+            shaderContainer->constantTableOffset.get(), constantTableContainerSize,
+            shaderContainer->virtualSize.get()));
+    }
+
+    const uint32_t constantTableDataSize = constantTableContainerSize - sizeof(be<uint32_t>);
+    const uint32_t constantCount = constantTableContainer->constantTable.constants;
+    const uint32_t constantInfoOffset = constantTableContainer->constantTable.constantInfo;
+    if (constantInfoOffset > constantTableDataSize ||
+        constantCount > (constantTableDataSize - constantInfoOffset) / sizeof(ConstantInfo))
+    {
+        throw std::runtime_error(fmt::format(
+            "invalid constant info range: offset={} count={} table_size={}",
+            constantInfoOffset, constantCount, constantTableDataSize));
+    }
+
+    for (uint32_t i = 0; i < constantCount; i++)
+    {
+        const auto constantInfo = reinterpret_cast<const ConstantInfo*>(
+            constantTableData + constantInfoOffset + i * sizeof(ConstantInfo));
+        const uint32_t nameOffset = constantInfo->name;
+        if (nameOffset >= constantTableDataSize ||
+            std::memchr(constantTableData + nameOffset, '\0', constantTableDataSize - nameOffset) == nullptr)
+        {
+            throw std::runtime_error(fmt::format(
+                "invalid constant name range: index={} name_offset={} table_size={}",
+                i, nameOffset, constantTableDataSize));
+        }
+    }
+
+    if (trace)
+        fmt::println(stderr, "trace: constant table validated");
+
+    const auto shader = reinterpret_cast<const Shader*>(shaderData + shaderContainer->shaderOffset);
+    if (shader->physicalOffset > shaderContainer->physicalSize ||
+        shader->size > shaderContainer->physicalSize - shader->physicalOffset ||
+        shader->size > 4096 ||
+        (shader->size % 12) != 0)
+    {
+        throw std::runtime_error(fmt::format(
+            "invalid shader bytecode range: physical_offset={} shader_size={} physical_size={}",
+            shader->physicalOffset.get(), shader->size.get(), shaderContainer->physicalSize.get()));
+    }
+
+    const be<uint32_t>* code = reinterpret_cast<const be<uint32_t>*>(shaderData + shaderContainer->virtualSize + shader->physicalOffset);
+    if (trace)
+        fmt::println(stderr, "trace: shader range validated size={}", shader->size.get());
+    std::map<uint32_t, uint32_t> unreflectedSamplers;
+    for (uint32_t i = 0; i < 16; i++)
+        unreflectedSamplers.emplace(i, 0);
 
     out += "#ifdef __spirv__\n\n";
+    out += "#define LoadVertexShaderConstant(INDEX) vk::RawBufferLoad<float4>(g_PushConstants.VertexShaderConstants + min(uint(INDEX), 255u) * 16, 0x10)\n";
+    out += "#define LoadPixelShaderConstant(INDEX) vk::RawBufferLoad<float4>(g_PushConstants.PixelShaderConstants + min(uint(INDEX), 223u) * 16, 0x10)\n\n";
 
 #ifdef UNLEASHED_RECOMP
     bool isMetaInstancer = false;
@@ -1356,6 +1561,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
         case RegisterSet::Sampler:
         {
+            unreflectedSamplers.erase(constantInfo->registerIndex);
+
             for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
             {
                 println("#define {}_Texture{}DescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
@@ -1372,7 +1579,21 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         }
     }
 
+    for (auto& [samplerIndex, _] : unreflectedSamplers)
+    {
+        for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
+        {
+            println("#define s{}_Texture{}DescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+                samplerIndex, TEXTURE_DIMENSIONS[j], j * 64 + samplerIndex * 4);
+        }
+
+        println("#define s{}_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+            samplerIndex, std::size(TEXTURE_DIMENSIONS) * 64 + samplerIndex * 4);
+    }
+
     out += "\n#elif defined(__air__)\n\n";
+    out += "#define LoadVertexShaderConstant(INDEX) (*(reinterpret_cast<device float4*>(g_PushConstants.VertexShaderConstants + min(uint(INDEX), 255u) * 16)))\n";
+    out += "#define LoadPixelShaderConstant(INDEX) (*(reinterpret_cast<device float4*>(g_PushConstants.PixelShaderConstants + min(uint(INDEX), 223u) * 16)))\n\n";
 
     for (uint32_t i = 0; i < constantTableContainer->constantTable.constants; i++)
     {
@@ -1441,10 +1662,30 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         }
     }
 
+    for (auto& [samplerIndex, _] : unreflectedSamplers)
+    {
+        for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
+        {
+            println("#define s{}_Texture{}DescriptorIndex (*(reinterpret_cast<device uint*>(g_PushConstants.SharedConstants + {})))",
+                samplerIndex, TEXTURE_DIMENSIONS[j], j * 64 + samplerIndex * 4);
+        }
+
+        println("#define s{}_SamplerDescriptorIndex (*(reinterpret_cast<device uint*>(g_PushConstants.SharedConstants + {})))",
+            samplerIndex, std::size(TEXTURE_DIMENSIONS) * 64 + samplerIndex * 4);
+    }
+
     out += "\n#else\n\n";
 
-    println("cbuffer {}ShaderConstants : register(b{}, space4)", isPixelShader ? "Pixel" : "Vertex", isPixelShader ? 1 : 0);
+    const char* shaderName = isPixelShader ? "Pixel" : "Vertex";
+    const uint32_t shaderConstantCount = isPixelShader ? 224 : 256;
+
+    println("cbuffer {}ShaderConstants : register(b{}, space4)", shaderName, isPixelShader ? 1 : 0);
     out += "{\n";
+    println("\tfloat4 g_{}ShaderConstants[{}] : packoffset(c0);", shaderName, shaderConstantCount);
+    out += "};\n\n";
+    println("#define Load{}ShaderConstant(INDEX) g_{}ShaderConstants[min(uint(INDEX), {}u)]",
+        shaderName, shaderName, shaderConstantCount - 1);
+    out += "\n";
 
     for (uint32_t i = 0; i < constantTableContainer->constantTable.constants; i++)
     {
@@ -1455,25 +1696,25 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         {
             const char* constantName = reinterpret_cast<const char*>(constantTableData + constantInfo->name);
 
-            print("\tfloat4 {}", constantName);
-
-            if (constantInfo->registerCount > 1)
-                print("[{}]", constantInfo->registerCount.get());
-
-            println(" : packoffset(c{});", constantInfo->registerIndex.get());
-
             if (constantInfo->registerCount > 1)
             {
                 uint32_t tailCount = (isPixelShader ? 224 : 256) - constantInfo->registerIndex;
-                println("#define {0}(INDEX) selectWrapper((INDEX) < {1}, {0}[min(INDEX, {2})], 0.0)", constantName, tailCount, tailCount - 1);
+                println("#define {0}(INDEX) selectWrapper((INDEX) < {1}, g_{2}ShaderConstants[{3} + min(uint(INDEX), {4}u)], 0.0)",
+                    constantName, tailCount, shaderName, constantInfo->registerIndex.get(), tailCount - 1);
+            }
+            else
+            {
+                println("#define {} g_{}ShaderConstants[{}]", constantName, shaderName,
+                    constantInfo->registerIndex.get());
             }
         }
     }
 
-    out += "};\n\n";
-
     out += "cbuffer SharedConstants : register(b2, space4)\n";
     out += "{\n";
+
+    bool printedSamplerConstants[16] {};
+    std::vector<std::string> samplerConstantNames;
 
     for (uint32_t i = 0; i < constantTableContainer->constantTable.constants; i++)
     {
@@ -1483,6 +1724,9 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         if (constantInfo->registerSet == RegisterSet::Sampler)
         {
             const char* constantName = reinterpret_cast<const char*>(constantTableData + constantInfo->name);
+            samplerConstantNames.emplace_back(constantName);
+            if (constantInfo->registerIndex < std::size(printedSamplerConstants))
+                printedSamplerConstants[constantInfo->registerIndex] = true;
 
             for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
             {
@@ -1495,10 +1739,54 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         }
     }
 
+    for (auto& [samplerIndex, _] : unreflectedSamplers)
+    {
+        if (samplerIndex >= std::size(printedSamplerConstants))
+            continue;
+
+        printedSamplerConstants[samplerIndex] = true;
+
+        for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
+        {
+            println("\tuint s{}_Texture{}DescriptorIndex : packoffset(c{}.{});",
+                samplerIndex, TEXTURE_DIMENSIONS[j], j * 4 + samplerIndex / 4, SWIZZLES[samplerIndex % 4]);
+        }
+
+        println("\tuint s{}_SamplerDescriptorIndex : packoffset(c{}.{});",
+            samplerIndex, 4 * std::size(TEXTURE_DIMENSIONS) + samplerIndex / 4, SWIZZLES[samplerIndex % 4]);
+    }
+
     out += "\tDEFINE_SHARED_CONSTANTS();\n";
     out += "};\n\n";
 
     out += "#endif\n";
+
+    for (const std::string& samplerName : samplerConstantNames)
+    {
+        println("#define {}_Texture1DDescriptorIndex {}_Texture2DDescriptorIndex",
+            samplerName, samplerName);
+    }
+
+    for (uint32_t samplerIndex = 0; samplerIndex < 16; samplerIndex++)
+    {
+        println("#define s{}_Texture1DDescriptorIndex s{}_Texture2DDescriptorIndex",
+            samplerIndex, samplerIndex);
+    }
+
+    for (uint32_t samplerIndex = 16; samplerIndex < 32; samplerIndex++)
+    {
+        uint32_t aliasedSamplerIndex = samplerIndex & 15;
+        println("#define s{}_Texture1DDescriptorIndex s{}_Texture2DDescriptorIndex",
+            samplerIndex, aliasedSamplerIndex);
+        for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
+        {
+            println("#define s{}_Texture{}DescriptorIndex s{}_Texture{}DescriptorIndex",
+                samplerIndex, TEXTURE_DIMENSIONS[j], aliasedSamplerIndex, TEXTURE_DIMENSIONS[j]);
+        }
+
+        println("#define s{}_SamplerDescriptorIndex s{}_SamplerDescriptorIndex",
+            samplerIndex, aliasedSamplerIndex);
+    }
 
     for (uint32_t i = 0; i < constantTableContainer->constantTable.constants; i++)
     {
@@ -1514,8 +1802,6 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     }
 
     out += '\n';
-
-    const auto shader = reinterpret_cast<const Shader*>(shaderData + shaderContainer->shaderOffset);
 
     println("struct {}", isPixelShader ? "Interpolators" : "VertexShaderInput");
     out += "{\n";
@@ -1541,7 +1827,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     else
     {
         auto vertexShader = reinterpret_cast<const VertexShader*>(shader);
-
+        bool emittedAirVertexInputs[std::size(USAGE_TYPES)][16]{};
+        bool emittedHlslVertexInputs[std::size(USAGE_TYPES)][16]{};
         out += "#ifdef __air__\n";
 
         for (uint32_t i = 0; i < vertexShader->vertexElementCount; i++)
@@ -1554,36 +1841,45 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
             value = vertexShader->vertexElementsAndInterpolators[vertexShader->field18 + i];
 
-            const char* usageType = USAGE_TYPES[uint32_t(vertexElement.usage)];
+            if (uint32_t(vertexElement.usage) >= std::size(USAGE_TYPES))
+            {
+                vertexElements.emplace(uint32_t(vertexElement.address), vertexElement);
+                continue;
+            }
 
+            const char* usageType = USAGE_TYPES[uint32_t(vertexElement.usage)];
+            const uint32_t usageIndex = uint32_t(vertexElement.usageIndex);
+            const auto usageLocation = findUsageLocation(vertexElement.usage, usageIndex);
+            if (usageLocation == nullptr)
+            {
+                vertexElements.emplace(uint32_t(vertexElement.address), vertexElement);
+                continue;
+            }
+
+            if (emittedAirVertexInputs[uint32_t(vertexElement.usage)][usageIndex])
+            {
+                vertexElements.emplace(uint32_t(vertexElement.address), vertexElement);
+                continue;
+            }
+            emittedAirVertexInputs[uint32_t(vertexElement.usage)][usageIndex] = true;
+
+            bool useUintInput = isPosition0(vertexElement.usage, usageIndex);
 #ifdef UNLEASHED_RECOMP
-            if ((vertexElement.usage == DeclUsage::TexCoord && vertexElement.usageIndex == 2 && isMetaInstancer) ||
-                (vertexElement.usage == DeclUsage::Position && vertexElement.usageIndex == 1))
+            useUintInput = useUintInput ||
+                (vertexElement.usage == DeclUsage::TexCoord && vertexElement.usageIndex == 2 && isMetaInstancer) ||
+                (vertexElement.usage == DeclUsage::Position && vertexElement.usageIndex == 1);
+#endif
+            if (useUintInput)
             {
                 usageType = "uint4";
             }
-#endif
 
             out += '\t';
 
             print("{0} i{1}{2}", usageType, USAGE_VARIABLES[uint32_t(vertexElement.usage)],
-                uint32_t(vertexElement.usageIndex));
+                usageIndex);
 
-            bool foundUsage = false;
-            for (auto& usageLocation : USAGE_LOCATIONS)
-            {
-                if (usageLocation.usage == vertexElement.usage && usageLocation.usageIndex == vertexElement.usageIndex)
-                {
-                    println(" [[attribute({})]];", usageLocation.location);
-                    foundUsage = true;
-                    break;
-                }
-            }
-
-            if (!foundUsage) {
-                fmt::println("Missing mapping for vertex element usage: {} {}", USAGE_VARIABLES[uint32_t(vertexElement.usage)], uint32_t(vertexElement.usageIndex));
-                exit(1);
-            }
+            println(" [[attribute({})]];", usageLocation->location);
 
             vertexElements.emplace(uint32_t(vertexElement.address), vertexElement);
         }
@@ -1600,29 +1896,42 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
             value = vertexShader->vertexElementsAndInterpolators[vertexShader->field18 + i];
 
-            const char* usageType = USAGE_TYPES[uint32_t(vertexElement.usage)];
+            if (uint32_t(vertexElement.usage) >= std::size(USAGE_TYPES))
+            {
+                continue;
+            }
 
+            const char* usageType = USAGE_TYPES[uint32_t(vertexElement.usage)];
+            const uint32_t usageIndex = uint32_t(vertexElement.usageIndex);
+            const auto usageLocation = findUsageLocation(vertexElement.usage, usageIndex);
+            if (usageLocation == nullptr)
+            {
+                continue;
+            }
+
+            if (emittedHlslVertexInputs[uint32_t(vertexElement.usage)][usageIndex])
+            {
+                continue;
+            }
+            emittedHlslVertexInputs[uint32_t(vertexElement.usage)][usageIndex] = true;
+
+            bool useUintInput = isPosition0(vertexElement.usage, usageIndex);
 #ifdef UNLEASHED_RECOMP
-            if ((vertexElement.usage == DeclUsage::TexCoord && vertexElement.usageIndex == 2 && isMetaInstancer) ||
-                (vertexElement.usage == DeclUsage::Position && vertexElement.usageIndex == 1))
+            useUintInput = useUintInput ||
+                (vertexElement.usage == DeclUsage::TexCoord && vertexElement.usageIndex == 2 && isMetaInstancer) ||
+                (vertexElement.usage == DeclUsage::Position && vertexElement.usageIndex == 1);
+#endif
+            if (useUintInput)
             {
                 usageType = "uint4";
             }
-#endif
 
             out += '\t';
 
-            for (auto& usageLocation : USAGE_LOCATIONS)
-            {
-                if (usageLocation.usage == vertexElement.usage && usageLocation.usageIndex == vertexElement.usageIndex)
-                {
-                    print("[[vk::location({})]] ", usageLocation.location);
-                    break;
-                }
-            }
+            print("[[vk::location({})]] ", usageLocation->location);
 
             println("{0} i{1}{2} : {3}{2};", usageType, USAGE_VARIABLES[uint32_t(vertexElement.usage)],
-                uint32_t(vertexElement.usageIndex), USAGE_SEMANTICS[uint32_t(vertexElement.usage)]);
+                usageIndex, USAGE_SEMANTICS[uint32_t(vertexElement.usage)]);
         }
 
         out += "#endif\n";
@@ -1785,6 +2094,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     }
 #endif
 
+    bool printedIntConstants[32]{};
+
     if (shaderContainer->definitionTableOffset != NULL)
     {
         auto definitionTable = reinterpret_cast<const DefinitionTable*>(shaderData + shaderContainer->definitionTableOffset);
@@ -1802,6 +2113,10 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                 println("\tfloat4 c{} = asfloat(uint4(0x{:X}, 0x{:X}, 0x{:X}, 0x{:X}));",
                     definition->registerIndex + i - (isPixelShader ? 256 : 0), value[0].get(), value[1].get(), value[2].get(), value[3].get());
                 println("#endif");
+
+                // Record this register so direct (non-relative) constant reads resolve to the
+                // local `c{N}` default instead of the zero runtime constant buffer.
+                float4Definitions.emplace(definition->registerIndex + i - (isPixelShader ? 256 : 0));
 
                 value += 4;
             }
@@ -1829,6 +2144,9 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
                 println("\tint4 i{} = int4({}, {}, {}, {});",
                     (definition->registerIndex - 8992) / 4 + i, x, y, z, w);
+                const uint32_t intRegister = (definition->registerIndex - 8992) / 4 + i;
+                if (intRegister < std::size(printedIntConstants))
+                    printedIntConstants[intRegister] = true;
             }
             definitions += 2;
             definitions += definition->count;
@@ -1837,7 +2155,15 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         out += "\n";
     }
 
-    bool printedRegisters[32]{};
+    for (uint32_t i = 0; i < std::size(printedIntConstants); i++)
+    {
+        if (!printedIntConstants[i])
+            println("\tint4 i{} = int4(1, 0, 0, 0);", i);
+    }
+
+    out += "\n";
+
+    bool printedRegisters[64]{};
 
     uint32_t interpolatorCount = (shader->interpolatorInfo >> 5) & 0x1F;
 
@@ -1876,7 +2202,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         out += "\n";
     }
 
-    for (size_t i = 0; i < 32; i++)
+    for (size_t i = 0; i < std::size(printedRegisters); i++)
     {
         if (!printedRegisters[i])
         {
@@ -1902,6 +2228,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     out += "\tint aL = 0;\n";
     out += "\tbool p0 = false;\n";
     out += "\tfloat ps = 0.0;\n";
+    if (trace)
+        fmt::println(stderr, "trace: declarations emitted");
     if (isPixelShader)
     {
 #ifdef UNLEASHED_RECOMP
@@ -1928,8 +2256,6 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         out += "\t}\n";
 #endif
     }
-
-    const be<uint32_t>* code = reinterpret_cast<const be<uint32_t>*>(shaderData + shaderContainer->virtualSize + shader->physicalOffset);
 
     union
     {
@@ -1961,6 +2287,13 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
             switch (cfInstr.opcode)
             {
+            case ControlFlowOpcode::Nop:
+            case ControlFlowOpcode::Alloc:
+            case ControlFlowOpcode::CondCall:
+            case ControlFlowOpcode::Return:
+            case ControlFlowOpcode::MarkVsFetchDone:
+                continue;
+
             case ControlFlowOpcode::Exec:
             case ControlFlowOpcode::ExecEnd:
                 address = cfInstr.exec.address;
@@ -1997,6 +2330,9 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         instrAddress += 12;
     }
 
+    if (trace)
+        fmt::println(stderr, "trace: control-flow scan done simple={} instr_size={}", simpleControlFlow, instrSize);
+
     if (simpleControlFlow)
     {
         out += '\n';
@@ -2014,6 +2350,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     controlFlowCode = code;
     instrAddress = 0;
     uint32_t pc = 0;
+    uint32_t emittedInstructionCount = 0;
 
     while (instrAddress < instrSize)
     {
@@ -2024,6 +2361,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
         for (auto& cfInstr : controlFlow)
         {
+            if (trace)
+                fmt::println(stderr, "trace: cf top pc={} opcode={}", pc, uint32_t(cfInstr.opcode));
             if (!simpleControlFlow)
             {
                 indentation = 3;
@@ -2036,9 +2375,12 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                 {
                     for (uint32_t i = 0; i < findResult->second; i++)
                     {
-                        --indentation;
-                        indent();
-                        out += "}\n";
+                        if (indentation > 1)
+                        {
+                            --indentation;
+                            indent();
+                            out += "}\n";
+                        }
                     }
                 }
             }
@@ -2052,6 +2394,16 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
             switch (cfInstr.opcode)
             {
+            case ControlFlowOpcode::Nop:
+            case ControlFlowOpcode::Alloc:
+            case ControlFlowOpcode::CondCall:
+            case ControlFlowOpcode::MarkVsFetchDone:
+                continue;
+
+            case ControlFlowOpcode::Return:
+                shouldReturn = true;
+                break;
+
             case ControlFlowOpcode::Exec:
             case ControlFlowOpcode::ExecEnd:
                 address = cfInstr.exec.address;
@@ -2099,9 +2451,12 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             case ControlFlowOpcode::LoopEnd:
                 if (simpleControlFlow)
                 {
-                    --indentation;
-                    indent();
-                    out += "}\n";
+                    if (indentation > 1)
+                    {
+                        --indentation;
+                        indent();
+                        out += "}\n";
+                    }
                 }
                 else
                 {
@@ -2157,7 +2512,17 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             }
             }
 
+            if (trace)
+                fmt::println(stderr, "trace: cf switch done pc={} address={} count={} indentation={}",
+                    pc - 1, address, count, indentation);
             auto instructionCode = code + address * 3;
+            if (address * 12 > shader->size || count > (shader->size - address * 12) / 12)
+            {
+                continue;
+            }
+            if (trace)
+                fmt::println(stderr, "trace: emit cf pc={} opcode={} address={} count={} sequence={:08X}",
+                    pc - 1, uint32_t(cfInstr.opcode), address, count, sequence);
             
             for (uint32_t i = 0; i < count; i++)
             {
@@ -2180,6 +2545,9 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             
                 if ((sequence & 0x1) != 0)
                 {
+                    if (trace)
+                        fmt::println(stderr, "trace: emit fetch address={} i={} opcode={} sequence={:08X}",
+                            address, i, uint32_t(vertexFetch.opcode), sequence);
                     if (vertexFetch.opcode == FetchOpcode::VertexFetch)
                     {
                         recompile(vertexFetch, address + i);
@@ -2223,11 +2591,17 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                 }
                 else
                 {
+                    if (trace)
+                        fmt::println(stderr, "trace: emit alu address={} i={} vector={} scalar={} sequence={:08X}",
+                            address, i, uint32_t(alu.vectorOpcode), uint32_t(alu.scalarOpcode), sequence);
                     recompile(alu);
                 }
             
                 sequence >>= 2;
                 instructionCode += 3;
+                ++emittedInstructionCount;
+                if (emittedInstructionCount > 1024 || out.size() > 96 * 1024)
+                    throw std::runtime_error("shader generated too much HLSL");
             }
 
             if (shouldReturn)
@@ -2295,6 +2669,9 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         instrAddress += 12;
     }
 
+    if (trace)
+        fmt::println(stderr, "trace: control-flow emit done output_size={}", out.size());
+
     if (!simpleControlFlow)
     {
         out += "\t\t\tbreak;\n";
@@ -2308,12 +2685,24 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         out += "\t}\n";
 #endif
 
+    if (simpleControlFlow)
+    {
+        while (indentation > 1)
+        {
+            --indentation;
+            indent();
+            out += "}\n";
+        }
+    }
+
     if (!simpleControlFlow)
         out += "\treturn output;\n";
 #ifdef UNLEASHED_RECOMP
     else if (hasMtxProjection)
         out += "\treturn output;\n";
 #endif
+    else
+        out += "\treturn output;\n";
 
     out += "}";
 }
